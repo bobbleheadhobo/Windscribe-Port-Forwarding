@@ -6,7 +6,7 @@
 Forked from https://github.com/JNuggets/Windscribe-Ephemeral-Port-Script
 
 JNuggets' credits :
-This script has been modified from Mibo5454's original to refresh the Windscribe Ephermeral port and set qBittorrents
+This script has been modified from Mibo5454's original to refresh the Windscribe Ephemeral port and set qBittorrents
 listening port automatically.
 
 # Disclaimer
