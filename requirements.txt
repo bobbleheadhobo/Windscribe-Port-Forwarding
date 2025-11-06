@@ -1,0 +1,4 @@
+python-dotenv==1.2.1
+qbittorrent-api==2025.7.0
+requests==2.32.5
+seleniumbase==4.44.6

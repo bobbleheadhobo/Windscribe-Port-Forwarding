@@ -1,122 +1,368 @@
 import sys
-from selenium import webdriver
-import selenium      
-from selenium.webdriver.chrome.options import Options
-chrome_options = Options()
-
-
-from dotenv import load_dotenv
-load_dotenv()
 import os
-ws_username = os.getenv("ws_username")
-ws_password = os.getenv("ws_password")
-qbt_username = os.getenv("qbt_username")
-qbt_password = os.getenv("qbt_password")
-qbt_host = os.getenv("qbt_host")
-qbt_port = os.getenv("qbt_port")
-bot_token = os.getenv("bot_token")
-discord_userid = os.getenv("discord_userid")
-aquiredPort = 0
-
-# For using sleep function because selenium  
-# works only when the all the elements of the  
-# page is loaded. 
-import time  
-
+import logging
+import time
+import requests
+from dotenv import load_dotenv
+from seleniumbase import Driver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, WebDriverException
 import qbittorrentapi
 
-import discord
-intents = discord.Intents.default()
-intents.message_content = True
 
-discordclient = discord.Client(intents=intents)
-
-@discordclient.event
-async def on_ready():
-    print(f'We have logged in as {discordclient.user}')
-    user = await discordclient.fetch_user(discord_userid)
-
-    # Send the acquired port value as a DM
-    await user.send("New Port: " + str(aquiredPort))
-    sys.exit()
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('windscribe_port_manager.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 
-#Required for running chromedriver headless
-chrome_options.add_argument("--disable-gpu")
-#chrome_options.add_argument("--no-sandbox") # linux only
-chrome_options.add_argument("--headless") #Disable to view chrome
-print("Running Chrome Headless")
-from selenium.webdriver.common.keys import Keys  
-  
-# Creating an instance webdriver 
-browser = webdriver.Chrome(options=chrome_options)  
-browser.get('https://www.windscribe.com/login') 
-time.sleep(2) 
-  
-print("Login to Windscribe") 
-  
-user = browser.find_element("xpath", '//*[@id="username"]') 
-  
-user.send_keys(ws_username) 
-  
-passw = browser.find_element("xpath", '//*[@id="pass"]') 
-  
-passw.send_keys(ws_password)
-passw.submit()
+class ConfigurationError(Exception):
+    """Raised when required configuration is missing"""
+    pass
 
-print("Login Successful") 
 
-time.sleep(5) 
-browser.get('https://windscribe.com')
-time.sleep(5)
-browser.get('https://windscribe.com/myaccount#porteph')
-print("Load Request Ephemeral Port Page")
-time.sleep(5)
+class WindscribePortManager:
+    """Manages Windscribe ephemeral port forwarding"""
+    
+    
+    def __init__(self):
+        """Initialize the port manager and load configuration"""
+        logger.info("\n" * 3)
+        logger.info("=" * 60)
+        logger.info("Starting Windscribe Port Manager")
+        logger.info("=" * 60)
 
-print("")
-delPort = browser.find_element("xpath", '//*[@id="request-port-cont"]/button')
-delPortText = delPort.text
-print("Text of delPort button: " + delPortText)
-if delPortText == "Delete Port":
-    delPort.click()
-    print("Delete Port")
-    time.sleep(5)
-
-reqMatchPort = browser.find_element("xpath", "//button[normalize-space()='Request Matching Port']")
-reqMatchPort.click()
-print("Request New Port")
-time.sleep(5)
-
-port = browser.find_element("xpath", '//div[@id="epf-port-info"]//span[1]')
-
+        load_dotenv()
+        self.config = self._load_config()
+        self.browser = None
         
-print("New Port: " + port.text)
-aquiredPort = port.text
-  
-# closing the browser 
-browser.close()
 
-# instantiate a Client using the appropriate WebUI configuration
-client = qbittorrentapi.Client(host=qbt_host, port=qbt_port, username=qbt_username, password=qbt_password)
-# the Client will automatically acquire/maintain a logged in state in line with any request.
-# therefore, this is not necessary; however, you many want to test the provided login credentials.
-try:
-    client.auth_log_in()
-except qbittorrentapi.LoginFailed as e:
-    print(e)
+    def _load_config(self) -> dict:
+        """Load and validate environment variables"""
+        logger.info("Loading configuration from environment variables")
+        
+        required_vars = [
+            'ws_username', 'ws_password',
+            'qbt_username', 'qbt_password', 'qbt_host', 'qbt_port',
+            'discord_webhook_url'
+        ]
+        
+        config = {}
+        missing_vars = []
+        
+        for var in required_vars:
+            value = os.getenv(var)
+            if not value:
+                missing_vars.append(var)
+            config[var] = value
+            
+        if missing_vars:
+            error_msg = f"Missing required environment variables: {', '.join(missing_vars)}"
+            logger.error(error_msg)
+            raise ConfigurationError(error_msg)
+            
+        logger.info("Configuration loaded successfully")
+        return config
+    
 
-# display qBittorrent info
-# print(f'qBittorrent: {client.app.version}')
-# print(f'qBittorrent Web API: {client.app.web_api_version}')
+    def _init_browser(self):
+        """Initialize Chrome browser"""
+        logger.info("Initializing Chrome browser")
+        
+        try:
+            self.browser = Driver(uc=True, browser='chrome')
+            logger.info("Browser initialized successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize browser: {str(e)}")
+            raise
+    
 
-#Set qBittorrent listening port
-prefs = client.application.preferences
-prefs['listen_port'] = aquiredPort
-client.app.preferences = prefs
-print("Set qBittorrent listening port to " + aquiredPort)
+    def _wait_for_element(self, by: By, value: str, timeout: int = 20):
+        """Wait for element to be present and return it"""
+        try:
+            element = WebDriverWait(self.browser, timeout).until(
+                EC.presence_of_element_located((by, value))
+            )
+            return element
+        except TimeoutException:
+            logger.error(f"Timeout waiting for element: {value}")
+            raise
+    
 
-#Send update to discord
-if (discord_userid != ""):
-    discordclient.run(bot_token)
-else:
-    sys.exit()
+    def _wait_for_clickable(self, by: By, value: str, timeout: int = 20):
+        """Wait for element to be clickable and return it"""
+        try:
+            element = WebDriverWait(self.browser, timeout).until(
+                EC.element_to_be_clickable((by, value))
+            )
+            return element
+        except TimeoutException:
+            logger.error(f"Timeout waiting for clickable element: {value}")
+            raise
+    
+
+    def get_windscribe_port(self) -> str:
+        """
+        Login to Windscribe and request an ephemeral port
+        
+        Returns:
+            str: The acquired port number
+            
+        Raises:
+            Exception: If login fails or port cannot be acquired
+        """
+        logger.info("Starting Windscribe port fetcher")
+        
+        try:
+            self._init_browser()
+            
+            # Navigate to login page
+            logger.info("Navigating to Windscribe login page")
+            self.browser.get('https://windscribe.com/login')
+
+            '''
+            # Check for Cloudflare challenge
+            # cant scrape the cloudflare page for some reason
+            try:
+                captcha = self._wait_for_element(By.XPATH, '//*[@id="challenge-success-text"]', timeout=5)
+            except Exception:
+                captcha = None
+
+            if captcha:
+                logger.info("Cloudflare challenge detected")
+                try:
+                    username_field = self._wait_for_element(By.XPATH, '//*[@id="username"]', timeout=45)
+                    if username_field:
+                        logger.info("Cloudflare challenge bypassed")
+                except Exception:
+                    raise Exception("Failed to bypass Cloudflare challenge")
+            '''     
+
+            time.sleep(1)
+            if ('cloudflare-challenge' in self.browser.page_source.lower()):
+                logger.info("Cloudflare challenge detected")
+                try:
+                    username_field = self._wait_for_element(By.XPATH, '//*[@id="username"]', timeout=45)
+                    if username_field:
+                        logger.info("Cloudflare challenge bypassed")
+                except Exception:
+                    raise Exception("Failed to bypass Cloudflare challenge")   
+
+            try:
+                # Wait for and fill username
+                logger.info("Entering credentials")
+                username_field = self._wait_for_element(By.XPATH, '//*[@id="username"]', timeout=45) 
+                username_field.send_keys(self.config['ws_username'])
+                
+                # Fill password and submit
+                password_field = self._wait_for_element(By.XPATH, '//*[@id="pass"]')
+                password_field.send_keys(self.config['ws_password'])
+                password_field.submit()
+                
+                logger.info("Login submitted, waiting for authentication")
+                
+                # Wait for successful login by checking for account page element
+                self._wait_for_element(By.ID, "menu-account")
+                logger.info("Successfully logged into Windscribe")
+            except TimeoutException:
+                login_error = self._wait_for_element(By.XPATH, '//*[@id="loginform"]/div/div[1]', timeout=10)
+                error_msg = f"Login failed because {login_error.text}" if login_error else "timeout exceeded"
+                raise Exception(error_msg)
+            
+            # Navigate to ephemeral port page
+            logger.info("Navigating to ephemeral port page")
+            self.browser.get('https://windscribe.com/myaccount#porteph')
+            
+            # Wait for port management section to load
+            self._wait_for_element(By.ID, 'request-port-cont', timeout=15)
+            
+            # Check if we need to delete existing port
+            delete_button = self._wait_for_clickable(By.XPATH, '//*[@id="request-port-cont"]/button')
+            
+            button_text = delete_button.text
+            logger.info(f"Port button text: {button_text}")
+            
+            if button_text == "Delete Port":
+                logger.info("Deleting existing port")
+                delete_button.click()
+                
+                # Wait for deletion to complete
+                WebDriverWait(self.browser, 30).until(EC.text_to_be_present_in_element((By.XPATH, '//*[@id="request-port-cont"]/button'),"Request Matching Port"))
+                logger.info("Existing port deleted")
+            
+            # Request new port
+            logger.info("Requesting new ephemeral port")
+            request_button = self._wait_for_clickable(By.XPATH,"//button[normalize-space()='Request Matching Port']")
+            request_button.click()
+            
+            # Wait for port to be displayed
+            port_element = self._wait_for_element(By.XPATH,'//div[@id="epf-port-info"]//span[1]',timeout=15)
+            port = port_element.text.strip()
+            
+            # Validate port
+            if not port.isdigit():
+                raise ValueError(f"Invalid port received: {port}")
+                
+            logger.info(f"Successfully acquired port: {port}")
+            return port
+            
+        except TimeoutException as e:
+            error_msg = "Timeout while acquiring Windscribe port"
+            logger.error(error_msg)
+            raise Exception(error_msg) from e
+            
+        except Exception as e:
+            logger.error(e)
+            raise
+            
+        finally:
+            if self.browser:
+                img_dir = os.path.join(os.getcwd(), 'img')
+                os.makedirs(img_dir, exist_ok=True)
+                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                screenshot_path = os.path.join(img_dir, f"windscribe_{timestamp}.png")
+                try:
+                    self.browser.save_screenshot(screenshot_path)
+                except WebDriverException as e:
+                    logger.error(f"Failed to capture screenshot: {e}")
+                except Exception as e:
+                    logger.error(f"Unexpected error while saving screenshot: {e}")
+                logger.info("Closing browser")
+                self.browser.quit()
+    
+
+    def update_qbittorrent_port(self, port: str) -> bool:
+        """
+        Update qBittorrent listening port
+        
+        Args:
+            port: The port number to set
+            
+        Returns:
+            bool: True if successful
+            
+        Raises:
+            Exception: If connection or update fails
+        """
+        logger.info(f"Updating qBittorrent port to {port}")
+        
+        try:
+            # Connect to qBittorrent
+            client = qbittorrentapi.Client(
+                host=self.config['qbt_host'],
+                port=self.config['qbt_port'],
+                username=self.config['qbt_username'],
+                password=self.config['qbt_password']
+            )
+            
+            # Attempt login
+            try:
+                client.auth_log_in()
+                logger.info("Successfully authenticated with qBittorrent")
+            except qbittorrentapi.LoginFailed as e:
+                error_msg = f"qBittorrent login failed: {str(e)}"
+                logger.error(error_msg)
+                raise Exception(error_msg) from e
+            
+            # Update port
+            prefs = client.application.preferences
+            prefs['listen_port'] = int(port)
+            client.app.preferences = prefs
+            
+            logger.info(f"Successfully set qBittorrent listening port to {port}")
+            return True
+            
+        except Exception as e:
+            error_msg = f"Failed to update qBittorrent port: {str(e)}"
+            logger.error(error_msg)
+            raise
+    
+
+    def send_discord_notification(self, message: str, is_error: bool = False):
+        """
+        Send notification to Discord via webhook
+        
+        Args:
+            message: The message to send
+            is_error: Whether this is an error message
+        """
+        try:
+            webhook_url = self.config['discord_webhook_url']
+            
+            # Format message with emoji based on type
+            emoji = "❌" if is_error else "✅"
+            formatted_message = f"{emoji} **Windscribe Port Manager**\n{message}"
+            
+            payload = {
+                "content": formatted_message,
+                "username": "Windscribe Port Manager"
+            }
+            
+            response = requests.post(webhook_url, json=payload, timeout=10)
+            response.raise_for_status()
+            
+            logger.info(f"Discord notification sent: {message}")
+            
+        except Exception as e:
+            # Don't raise exception for notification failures
+            logger.error(f"Failed to send Discord notification: {str(e)}")
+    
+
+    def run(self):
+        """Main execution method"""
+        try:
+            # Step 1: Get port from Windscribe
+            port = self.get_windscribe_port()
+            
+            # Step 2: Update qBittorrent
+            self.update_qbittorrent_port(port)
+            
+            # Step 3: Send success notification
+            success_message = f"Port forwarding updated successfully!\n\n**New Port:** {port}"
+            self.send_discord_notification(success_message, is_error=False)
+            
+            logger.info("=" * 60)
+            logger.info("Windscribe Port Manager completed successfully")
+            logger.info("=" * 60)
+            
+            return 0
+            
+        except ConfigurationError as e:
+            error_message = f"Configuration Error:\n{str(e)}"
+            self.send_discord_notification(error_message, is_error=True)
+            logger.error("Exiting due to configuration error")
+            return 1
+            
+        except Exception as e:
+            error_message = f"Error occurred:\n{str(e)}"
+            self.send_discord_notification(error_message, is_error=True)
+            logger.error(f"Exiting due to error: {str(e)}")
+            return 1
+
+
+
+
+def main():
+    """Entry point for the script"""
+    try:
+        manager = WindscribePortManager()
+        sys.exit(manager.run())
+    except KeyboardInterrupt:
+        logger.info("\nOperation cancelled by user")
+        sys.exit(130)
+    except Exception as e:
+        logger.critical(f"Critical error: {str(e)}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
