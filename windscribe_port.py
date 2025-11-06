@@ -4,7 +4,7 @@ import logging
 import time
 import requests
 from dotenv import load_dotenv
-from seleniumbase import Driver
+from seleniumbase import SB
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -78,7 +78,9 @@ class WindscribePortManager:
         logger.info("Initializing Chrome browser")
         
         try:
-            self.browser = Driver(uc=True, browser='chrome')
+            sb_context = SB(uc=True, headless=True, incognito=True)
+            self.browser = sb_context.__enter__()
+            self._sb_context = sb_context
             logger.info("Browser initialized successfully")
             
         except Exception as e:
@@ -127,40 +129,31 @@ class WindscribePortManager:
             
             # Navigate to login page
             logger.info("Navigating to Windscribe login page")
-            self.browser.get('https://windscribe.com/login')
+            url = 'https://windscribe.com/login'
+            self.browser.uc_open_with_reconnect(url, reconnect_time=5)
 
-            '''
             # Check for Cloudflare challenge
-            # cant scrape the cloudflare page for some reason
             try:
-                captcha = self._wait_for_element(By.XPATH, '//*[@id="challenge-success-text"]', timeout=5)
+                logger.info("Checking for Cloudflare challenge")
+                captcha = self._wait_for_element(By.XPATH, '//*[@id="challenge-success-text"]', timeout=10)
             except Exception:
+                logger.info("No Cloudflare challenge detected")
                 captcha = None
 
             if captcha:
                 logger.info("Cloudflare challenge detected")
                 try:
-                    username_field = self._wait_for_element(By.XPATH, '//*[@id="username"]', timeout=45)
+                    self.browser.uc_gui_click_captcha()
+                    username_field = self._wait_for_element(By.XPATH, '//*[@id="username"]')
                     if username_field:
                         logger.info("Cloudflare challenge bypassed")
                 except Exception:
                     raise Exception("Failed to bypass Cloudflare challenge")
-            '''     
-
-            time.sleep(1)
-            if ('cloudflare-challenge' in self.browser.page_source.lower()):
-                logger.info("Cloudflare challenge detected")
-                try:
-                    username_field = self._wait_for_element(By.XPATH, '//*[@id="username"]', timeout=45)
-                    if username_field:
-                        logger.info("Cloudflare challenge bypassed")
-                except Exception:
-                    raise Exception("Failed to bypass Cloudflare challenge")   
-
+    
             try:
                 # Wait for and fill username
                 logger.info("Entering credentials")
-                username_field = self._wait_for_element(By.XPATH, '//*[@id="username"]', timeout=45) 
+                username_field = self._wait_for_element(By.XPATH, '//*[@id="username"]') 
                 username_field.send_keys(self.config['ws_username'])
                 
                 # Fill password and submit
@@ -187,7 +180,6 @@ class WindscribePortManager:
             
             # Check if we need to delete existing port
             delete_button = self._wait_for_clickable(By.XPATH, '//*[@id="request-port-cont"]/button')
-            
             button_text = delete_button.text
             logger.info(f"Port button text: {button_text}")
             
@@ -196,8 +188,12 @@ class WindscribePortManager:
                 delete_button.click()
                 
                 # Wait for deletion to complete
-                WebDriverWait(self.browser, 30).until(EC.text_to_be_present_in_element((By.XPATH, '//*[@id="request-port-cont"]/button'),"Request Matching Port"))
-                logger.info("Existing port deleted")
+                try:
+                    self._wait_for_element(By.XPATH, '//*[@id="epf-input"]')
+                    logger.info("Existing port deleted")
+                except TimeoutException:
+                    raise Exception("Failed to delete existing port")
+
             
             # Request new port
             logger.info("Requesting new ephemeral port")
@@ -237,7 +233,8 @@ class WindscribePortManager:
                 except Exception as e:
                     logger.error(f"Unexpected error while saving screenshot: {e}")
                 logger.info("Closing browser")
-                self.browser.quit()
+                if self._sb_context:
+                    self._sb_context.__exit__(None, None, None)
     
 
     def update_qbittorrent_port(self, port: str) -> bool:
@@ -253,7 +250,8 @@ class WindscribePortManager:
         Raises:
             Exception: If connection or update fails
         """
-        logger.info(f"Updating qBittorrent port to {port}")
+
+        logger.info("Connecting to qBittorrent")
         
         try:
             # Connect to qBittorrent
@@ -264,6 +262,8 @@ class WindscribePortManager:
                 password=self.config['qbt_password']
             )
             
+            logger.info("Authenticating with qBittorrent")
+
             # Attempt login
             try:
                 client.auth_log_in()
@@ -274,6 +274,7 @@ class WindscribePortManager:
                 raise Exception(error_msg) from e
             
             # Update port
+            logger.info(f"Updating qBittorrent port to {port}")
             prefs = client.application.preferences
             prefs['listen_port'] = int(port)
             client.app.preferences = prefs
