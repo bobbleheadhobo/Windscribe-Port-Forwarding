@@ -1,3 +1,4 @@
+import subprocess
 import sys
 import os
 import logging
@@ -51,8 +52,7 @@ class WindscribePortManager:
         
         required_vars = [
             'ws_username', 'ws_password',
-            'qbt_username', 'qbt_password', 'qbt_host', 'qbt_port',
-            'discord_webhook_url'
+            'qbt_username', 'qbt_password', 'qbt_host', 'qbt_port'
         ]
         
         config = {}
@@ -68,8 +68,17 @@ class WindscribePortManager:
             error_msg = f"Missing required environment variables: {', '.join(missing_vars)}"
             logger.error(error_msg)
             raise ConfigurationError(error_msg)
+        
+        if os.getenv('discord_webhook_url'):
+            config['discord_webhook_url'] = os.getenv('discord_webhook_url')
             
         logger.info("Configuration loaded successfully")
+        
+        self.status_steps = {'new windscribe port' : '❌', 'update qbittorrent port' : '❌'}
+        if os.getenv('docker_path'):
+            config['docker_path'] = os.getenv('docker_path')
+            self.status_steps['update docker env'] = '❌'
+            self.status_steps['restart docker containers'] = '❌'
         return config
     
 
@@ -78,7 +87,7 @@ class WindscribePortManager:
         logger.info("Initializing Chrome browser")
         
         try:
-            sb_context = SB(uc=True, headless=True, incognito=True)
+            sb_context = SB(uc=True, headless=False, incognito=True)
             self.browser = sb_context.__enter__()
             self._sb_context = sb_context
             logger.info("Browser initialized successfully")
@@ -135,20 +144,21 @@ class WindscribePortManager:
             # Check for Cloudflare challenge
             try:
                 logger.info("Checking for Cloudflare challenge")
-                captcha = self._wait_for_element(By.XPATH, '//*[@id="challenge-success-text"]', timeout=10)
-            except Exception:
+                captcha = self._wait_for_element(By.XPATH, '//*[@id="username"]', timeout=10) 
+                captcha = False
                 logger.info("No Cloudflare challenge detected")
-                captcha = None
+            except Exception:
+                captcha = True
 
             if captcha:
-                logger.info("Cloudflare challenge detected")
+                logger.info("Cloudflare challenge likely present")
                 try:
                     self.browser.uc_gui_click_captcha()
                     username_field = self._wait_for_element(By.XPATH, '//*[@id="username"]')
                     if username_field:
-                        logger.info("Cloudflare challenge bypassed")
-                except Exception:
-                    raise Exception("Failed to bypass Cloudflare challenge")
+                        logger.info("Cloudflare challenge passed!")
+                except Exception as e:
+                    raise Exception(f"Failed to pass Cloudflare challenge: {e}")
     
             try:
                 # Wait for and fill username
@@ -209,6 +219,7 @@ class WindscribePortManager:
                 raise ValueError(f"Invalid port received: {port}")
                 
             logger.info(f"Successfully acquired port: {port}")
+            self.status_steps['new windscribe port'] = f'✅'
             return port
             
         except TimeoutException as e:
@@ -280,6 +291,7 @@ class WindscribePortManager:
             client.app.preferences = prefs
             
             logger.info(f"Successfully set qBittorrent listening port to {port}")
+            self.status_steps['update qbittorrent port'] = '✅'
             return True
             
         except Exception as e:
@@ -296,6 +308,10 @@ class WindscribePortManager:
             message: The message to send
             is_error: Whether this is an error message
         """
+        if 'discord_webhook_url' not in self.config or not self.config['discord_webhook_url']:
+            logger.info("Discord webhook URL not configured, skipping notification")
+            return
+        
         try:
             webhook_url = self.config['discord_webhook_url']
             
@@ -317,6 +333,78 @@ class WindscribePortManager:
             # Don't raise exception for notification failures
             logger.error(f"Failed to send Discord notification: {str(e)}")
     
+    
+    def update_docker_network(self, port: str):
+        """
+        Update .env file used for Docker network configuration
+        
+        Args:
+            port: The new port number
+        """
+
+        docker_env_path = os.path.join(self.config['docker_path'], '.env')
+
+        try:
+            with open(docker_env_path, 'r') as f:
+                lines = f.readlines()
+
+            # Update the FIREWALL_VPN_INPUT_PORTS line
+            with open(docker_env_path, 'w') as f:
+                for line in lines:
+                    if line.startswith('FIREWALL_VPN_INPUT_PORTS='):
+                        f.write(f'FIREWALL_VPN_INPUT_PORTS={port}\n')
+                    else:
+                        f.write(line)
+                        
+            logger.info("Docker .env file updated with new port")
+            self.status_steps['update docker env'] = '✅'
+        except Exception as e:
+            raise Exception(f"Failed to update Docker .env file: {str(e)}")
+        
+        # restart Docker containers
+        subprocess.run(['docker', 'compose', 'restart', 'gluetun', 'qbittorrent', 'prowlarr'], cwd=self.config['docker_path'])
+
+        # Wait for containers to become healthy
+        if self.wait_for_healthy_docker_container('gluetun', timeout=60):
+            logger.info("Gluetun is healthy")
+        else:
+            raise Exception("Gluetun failed to become healthy")
+
+        if self.wait_for_healthy_docker_container('qbittorrent', timeout=60):
+            logger.info("qBittorrent is healthy")
+        else:
+            raise Exception("qBittorrent failed to become healthy")
+
+        if self.wait_for_healthy_docker_container('prowlarr', timeout=60):
+            logger.info("Prowlarr is healthy")
+        else:
+            raise Exception("Prowlarr failed to become healthy")
+
+        self.status_steps['restart docker containers'] = '✅'
+
+
+    def wait_for_healthy_docker_container(self, container_name, timeout=60):
+        """Wait for container to be healthy, return True if healthy within timeout"""
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            result = subprocess.run(
+                ['docker', 'inspect', '--format', '{{.State.Health.Status}}', container_name],
+                capture_output=True,
+                text=True
+            )
+            
+            status = result.stdout.strip()
+            print(f"{container_name} status: {status}")
+            
+            if status == 'healthy':
+                return True
+            elif status == 'unhealthy':
+                return False
+                
+            time.sleep(5)
+    
+        return False  # Timeout
 
     def run(self):
         """Main execution method"""
@@ -327,8 +415,14 @@ class WindscribePortManager:
             # Step 2: Update qBittorrent
             self.update_qbittorrent_port(port)
             
-            # Step 3: Send success notification
-            success_message = f"Port forwarding updated successfully!\n\n**New Port:** {port}"
+            # Step 3: Update Docker network
+            self.update_docker_network(port)
+
+            # Step 4: Send success notification
+            success_message = f"Port forwarding updated successfully!\nNew port: **{port}**\n\n"
+
+            status_info = "\n".join([f"{value} **{key}**" for key, value in self.status_steps.items()])
+            success_message += status_info
             self.send_discord_notification(success_message, is_error=False)
             
             logger.info("=" * 60)
@@ -339,12 +433,20 @@ class WindscribePortManager:
             
         except ConfigurationError as e:
             error_message = f"Configuration Error:\n{str(e)}"
+            
+            # Print status of each step
+            status_info = "\n".join([f"{value} {key}" for key, value in self.status_steps.items()])
+            error_message += f"\n\nStatus:\n{status_info}"
             self.send_discord_notification(error_message, is_error=True)
             logger.error("Exiting due to configuration error")
             return 1
             
         except Exception as e:
             error_message = f"Error occurred:\n{str(e)}"
+            
+            # Print status of each step
+            status_info = "\n".join([f"{value} {key}" for key, value in self.status_steps.items()])
+            error_message += f"\n\nStatus:\n{status_info}"
             self.send_discord_notification(error_message, is_error=True)
             logger.error(f"Exiting due to error: {str(e)}")
             return 1

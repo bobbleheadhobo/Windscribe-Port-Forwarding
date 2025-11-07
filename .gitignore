@@ -1,5 +1,6 @@
 .env
 windscribe_port_manager.log
 .venv/
+venv/
 downloaded_files/
 img/
