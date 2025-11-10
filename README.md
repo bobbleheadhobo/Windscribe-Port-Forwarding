@@ -1,53 +1,88 @@
-# Windscribe-Port-Forwarding
+# Windscribe Port Forwarding Manager
+
+Automatically manages Windscribe ephemeral port forwarding, updates qBittorrent listening ports and restarts Docker containers.
 
 ## Credits
-#### Original Credit: https://github.com/Mibo5354, https://gist.github.com/Mibo5354/cf265bc2108edb839e3607d9c9359dfa
 
-Forked from https://github.com/JNuggets/Windscribe-Ephemeral-Port-Script
+**Original Credit:** [Mibo5354](https://github.com/Mibo5354) - [Original Gist](https://gist.github.com/Mibo5354/cf265bc2108edb839e3607d9c9359dfa)
 
-JNuggets' credits :
-This script has been modified from Mibo5454's original to refresh the Windscribe Ephemeral port and set qBittorrents
-listening port automatically.
+**Forked from:** [JNuggets/Windscribe-Ephemeral-Port-Script](https://github.com/JNuggets/Windscribe-Ephemeral-Port-Script)
 
-# Disclaimer
-Reports of using the script often can lead to account being temporarily disabled. Windscribe support confirmed that it is allowed to use scripts such as this one, but keep it at once a week, don't spam their servers ;).
+**This fork adds:**
+- SeleniumBase to bypass Cloudflare challenges
+- Discord webhook notifications
+- Updates Docker network configuration
+- Restarts Docker containers
+- Better error handling and reporting
+- Comprehensive logging
 
-# Description
-This fork updates JNuggets' script with bug fixes, .env functionality for more security and Discord bot capabilities to get a DM when the port is updated (optional) !
+## ⚠️ Disclaimer
+
+**Important:** Using this script too frequently can lead to temporary account suspension. Windscribe support has confirmed that automation scripts are allowed, but **limit usage to once per week** to avoid overloading their servers.
+
+## Features
+
+- ✅ **Automated Port Updates** - Requests new ephemeral ports from Windscribe
+- ✅ **qBittorrent Integration** - Automatically updates listening port
+- ✅ **Discord Notifications** - Get notified via webhook (optional)
+- ✅ **Cloudflare Bypass** - Handles Cloudflare challenges automatically
+- ✅ **Detailed Error Reporting** - Know exactly what failed and why
+- ✅ **Screenshot Debugging** - Saves screenshots when error occur
+- ✅ **Docker Support** - Updates docker network and restart containers (optional)
 
 ## Requirements
 
-* Python (last tested on 3.11.0)
-* selenium Package (Last tested on 4.19.0)
-* qbittorrent-api Package (last tested on 2024.3.60)
-* python-dotenv Package (last tested on 1.0.1)
-* discord.py Package (last tested on 2.3.2)
+- **Python 3.12.3** (tested version)
+- Chrome or Chromium browser installed
 
-Note : The discord.py package is **not** optional, only the feature is.
+## Installation
 
-## Setup
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/yourusername/Windscribe-Port-Forwarding.git
+   cd Windscribe-Port-Forwarding
+   ```
 
-To use the script, create a .env file in the directory of the python script with the following variables :
+2. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-```
-ws_username=
-ws_password=
-qbt_username=
-qbt_password=
-qbt_host=
-qbt_port=
-bot_token=
-discord_userid=
-```
+3. **Configure environment variables:**
+   ```bash
+   cp .env_copy .env
+   ```
+   
+   Edit `.env` and fill in your credentials:
+   ```env
+   # Windscribe Credentials
+   ws_username=your_windscribe_username
+   ws_password=your_windscribe_password
 
-Replace :
-  * ws_username and ws_password with your Windscribe credentials
-  * qbt_username, qbt_password, qbt_host, qbt_port with your qBittorrent credentials
-## Optional
-If you wish to also get Discord messages for new ports, fill :
-  * bot_token with a Discord bot token
-  * discord_userid with your Discord User ID
+   # qBittorrent Configuration
+   qbt_host=http://localhost
+   qbt_port=8080
+   qbt_username=admin
+   qbt_password=your_qbt_password
 
-If you don't need the feature, leave the fields blank.
+   # Discord Webhook
+   discord_webhook_url=https://canary.discord.com/api/webhooks/YOUR_WEBHOOK_URL
 
-Note : Make sure that the bot has the right to message you ! Try adding it to a Discord server you own and enable DMs from members of that server if you are having issues.
+   # Docker .env path
+   docker_path=
+   ```
+
+## Configuration Options
+
+### Required Settings
+- `ws_username` - Windscribe username
+- `ws_password` - Windscribe password
+- `qbt_username` - qBittorrent Web UI username
+- `qbt_password` - qBittorrent Web UI password
+- `qbt_host` - qBittorrent host (e.g., `http://localhost` or `https://qbit.yourdomain.com`)
+- `qbt_port` - qBittorrent Web UI port (default: 8080)
+
+### Optional Settings (leave black to disable)
+- `discord_webhook_url` - Discord webhook for notifications (leave blank to disable)
+- `docker_path` - Path to docker .env and compose.yaml. Updates .env and restarts docker containers (gluetun, qbittorent, prowlarr). Needed if used TechHuts [guide](https://github.com/TechHutTV/homelab/tree/main/media) to set up servarr. 
+
