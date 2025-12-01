@@ -176,7 +176,7 @@ class WindscribePortManager:
                 # Wait for successful login by checking for account page element
                 self._wait_for_element(By.ID, "menu-account")
                 logger.info("Successfully logged into Windscribe")
-            except TimeoutException:
+            except Exception:
                 login_error = self._wait_for_element(By.XPATH, '//*[@id="loginform"]/div/div[1]', timeout=10)
                 error_msg = f"Login failed because {login_error.text}" if login_error else "timeout exceeded"
                 raise Exception(error_msg)
@@ -186,23 +186,25 @@ class WindscribePortManager:
             self.browser.get('https://windscribe.com/myaccount#porteph')
             
             # Wait for port management section to load
-            self._wait_for_element(By.ID, 'request-port-cont', timeout=15)
+            self._wait_for_element(By.XPATH, '//*[@id="ports-main-tab"]/div[1]/div[2]/div/div', timeout=15)
             
             # Check if we need to delete existing port
-            delete_button = self._wait_for_clickable(By.XPATH, '//*[@id="request-port-cont"]/button')
-            button_text = delete_button.text
-            logger.info(f"Port button text: {button_text}")
-            
-            if button_text == "Delete Port":
-                logger.info("Deleting existing port")
+            try:
+                menu_button = self._wait_for_clickable(By.XPATH, '//*[@id="ports-main-tab"]/div[1]/div[2]/div/button')
+                menu_button.click()
+         
+                delete_button = self._wait_for_clickable(By.XPATH, '//*[@id="pf-more-epf"]/li')
                 delete_button.click()
-                
-                # Wait for deletion to complete
-                try:
-                    self._wait_for_element(By.XPATH, '//*[@id="epf-input"]')
-                    logger.info("Existing port deleted")
-                except TimeoutException:
-                    raise Exception("Failed to delete existing port")
+            
+                logger.info("Deleting existing port")
+            except:
+               pass
+
+            try:
+                self._wait_for_element(By.XPATH, '//*[@id="epf-input"]')
+                logger.info("Existing port deleted")
+            except TimeoutException:
+                raise Exception("Failed to delete existing port")
 
             
             # Request new port
@@ -211,7 +213,7 @@ class WindscribePortManager:
             request_button.click()
             
             # Wait for port to be displayed
-            port_element = self._wait_for_element(By.XPATH,'//div[@id="epf-port-info"]//span[1]',timeout=15)
+            port_element = self._wait_for_element(By.XPATH,'//*[@id="ports-main-tab"]/div[1]/div[2]/div/div/span[2]',timeout=15)
             port = port_element.text.strip()
             
             # Validate port
